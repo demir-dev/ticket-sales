@@ -1,4 +1,5 @@
-{$DOMAIN} {
-    encode zstd gzip
-    reverse_proxy app:8080
+# Append this block to /etc/caddy/Caddyfile on the host.
+paok-arena-tickets.morphiclabs.net {
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:8087
 }

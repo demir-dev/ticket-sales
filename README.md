@@ -14,7 +14,6 @@ ASP.NET Core 10 + SQLite, plain HTML/CSS/JS, Stripe-hosted Checkout, Docker and 
 ```sh
 cp .env.example .env
 # Edit .env: PUBLIC_URL=http://localhost:5080, real TEST price IDs and TEST key.
-# DOMAIN is only used by Compose/Caddy.
 ```
 
 The app reads environment variables, not `.env` automatically. For local development with the supplied simple values, export them from your trusted `.env` file:
@@ -39,28 +38,67 @@ Open `http://localhost:5080`. Keep the hostname consistent: `localhost` and `127
 
 Use Stripe test card `4242 4242 4242 4242`, a future expiration, and any three-digit CVC. No real payment is made with test credentials. The CLI signing secret is for CLI-forwarded events; it is not the production endpoint secret.
 
-## Deploy on your subdomain
+## Deploy behind your existing host Caddy
 
-1. Point the subdomain's A/AAAA DNS records to the server (remove stale AAAA records). Permit inbound TCP 80/443 and UDP 443 if HTTP/3 is desired.
-2. Copy this folder to the server. Copy `.env.example` to `.env`, set `DOMAIN=tickets.yourdomain.com`, `PUBLIC_URL=https://tickets.yourdomain.com`, and your Stripe configuration. `PUBLIC_URL` is an origin with no path. Keep `.env` private (`chmod 600 .env`); do not put secrets in source control.
-3. Register `https://tickets.yourdomain.com/stripe/webhook` in Stripe Workbench/Dashboard as a **snapshot** webhook endpoint for your account, not a thin event or Connect endpoint. Subscribe to:
+Production URL: `https://paok-arena-tickets.morphiclabs.net`.
+The app listens on container port **8080**; Compose publishes it only at **127.0.0.1:8087** on the host. The existing host Caddy handles public HTTPS. Compose runs only the app, so it does not compete for ports 80/443. Port 8087 was not present in the provided Caddy configuration; verify it is free on the actual server.
+
+1. Point the subdomain's A record to the server (and AAAA only if IPv6 is configured). Ensure public TCP 80/443 reach your existing Caddy.
+2. Copy or clone this project to `/opt/ticket-sales`. On the server:
+
+```sh
+cd /opt/ticket-sales
+cp .env.example .env
+chmod 600 .env
+nano .env
+```
+
+Keep `PUBLIC_URL=https://paok-arena-tickets.morphiclabs.net`. Set the three real `STRIPE_PRICE_*` values, Stripe API key, and the signing secret for the webhook endpoint below. Price IDs must match the displayed EUR 25 / EUR 40 / EUR 60 tiers. Start in test mode; for live sales use live prices/key/endpoint and set `STRIPE_LIVE_MODE=true`. Never commit `.env`.
+
+3. Register `https://paok-arena-tickets.morphiclabs.net/stripe/webhook` in Stripe Workbench/Dashboard as an account **snapshot** webhook endpoint, subscribing to:
    - `checkout.session.completed`
    - `checkout.session.async_payment_succeeded`
    - `checkout.session.async_payment_failed`
    - `checkout.session.expired`
-4. Put that endpoint's signing secret in `.env`. Start with test mode. For production switch to live prices/key/endpoint secret and set `STRIPE_LIVE_MODE=true` together.
-5. Run:
+
+Copy that endpoint's `whsec_...` secret into `.env`. This is different from the API key and the local Stripe CLI signing secret.
+
+4. Check port availability and start the app:
 
 ```sh
+ss -ltnp 'sport = :8087'
 docker compose up -d --build
-docker compose logs --tail=100 app caddy
+curl --fail http://127.0.0.1:8087/health
+docker compose logs --tail=100 app
 ```
 
-Caddy obtains and renews HTTPS certificates. The app has no published host port; only Caddy is public. No forwarded headers are trusted, and return URLs come exclusively from `PUBLIC_URL`. After configuration changes use `docker compose up -d --build` to recreate the app. `docker compose down` preserves the database volume; **`down -v` deletes it**.
+The port check should show no listener before starting the app. If 8087 is already occupied, choose a free port and change both the Compose host port and Caddy upstream to match. Do not change the internal port 8080. The health endpoint should return `{"status":"ok"}`.
 
-The container runs as the built-in unprivileged `app` user. A new named database volume inherits `/data` ownership from the image. If substituting a bind mount, set its ownership to the image's app UID (normally 1654). Run **one app replica on one server**; this SQLite setup is not for shared/network storage or multi-host deployments.
+5. Back up `/etc/caddy/Caddyfile`, then append the block from this project's `Caddyfile` to your existing file. Keep the other sites in place:
 
-The base images use supported .NET 10 and Caddy 2 tags to receive patches on rebuild. Pull and rebuild periodically (`docker compose build --pull`). API calls pin `Stripe-Version: 2024-06-20` for the fields this app uses; webhook processing reads raw JSON and retrieves the current Session through that pinned API.
+```caddyfile
+paok-arena-tickets.morphiclabs.net {
+    encode gzip zstd
+    reverse_proxy 127.0.0.1:8087
+}
+```
+
+Validate the full configuration before reloading it:
+
+```sh
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+# Run only after validation succeeds:
+sudo systemctl reload caddy
+curl --fail https://paok-arena-tickets.morphiclabs.net/health
+```
+
+Caddy obtains/renews the certificate for this domain. The app sets its own security headers. Keep `/stripe/webhook` directly reachable without a login page or browser challenge; it verifies Stripe signatures itself. Requests are proxied with their paths intact.
+
+6. Complete each tier's test checkout and confirm webhook delivery before enabling live sales. After editing `.env` or source, run `docker compose up -d --build` again. `docker compose down` preserves the database; **`down -v` deletes it**. If migrating from the previous Compose version with its own Caddy container, remove that obsolete container with `docker compose up -d --build --remove-orphans`.
+
+The container runs as unprivileged `app`. A new named database volume inherits `/data` ownership. If substituting a bind mount, set its ownership to the image's app UID (normally 1654). Run one app replica on one server; this SQLite setup is not for network storage or multi-host deployments. Back up the `tickets` volume as described below.
+
+The images use .NET 10 tags to receive patches on rebuild; pull/rebuild periodically (`docker compose build --pull`). API requests pin `Stripe-Version: 2024-06-20` for the fields used. Return URLs come exclusively from `PUBLIC_URL`, and no forwarded headers are trusted.
 
 ## Payment and security flow
 
