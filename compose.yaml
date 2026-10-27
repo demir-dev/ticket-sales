@@ -1,0 +1,37 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:?Set STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:?Set STRIPE_WEBHOOK_SECRET}
+      STRIPE_PRICE_STANDARD: ${STRIPE_PRICE_STANDARD:?Set STRIPE_PRICE_STANDARD}
+      STRIPE_PRICE_PREMIUM: ${STRIPE_PRICE_PREMIUM:?Set STRIPE_PRICE_PREMIUM}
+      STRIPE_PRICE_VIP: ${STRIPE_PRICE_VIP:?Set STRIPE_PRICE_VIP}
+      STRIPE_LIVE_MODE: ${STRIPE_LIVE_MODE:-false}
+      STRIPE_AUTOMATIC_TAX: ${STRIPE_AUTOMATIC_TAX:-false}
+      DATABASE_PATH: /data/tickets.db
+    volumes:
+      - tickets:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+volumes:
+  tickets:
+  caddy_data:
+  caddy_config:
