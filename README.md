@@ -100,6 +100,12 @@ The container runs as unprivileged `app`. A new named database volume inherits `
 
 The images use .NET 10 tags to receive patches on rebuild; pull/rebuild periodically (`docker compose build --pull`). API requests pin `Stripe-Version: 2024-06-20` for the fields used. Return URLs come exclusively from `PUBLIC_URL`, and no forwarded headers are trusted.
 
+## Checkout presentation and customer details
+
+New Checkout Sessions use a **Book** submit button and collect email, phone number, and a required **Full name** text field. Email is collected by hosted Checkout by default; phone collection is explicitly enabled. Full name is a required custom field, separate from the cardholder name, so wallet payments also collect it without changing the app's pinned API version.
+
+These are Session settings in `src/StripeGateway.cs`; settings on existing Payment Links do not apply to sessions created by this app. Details are stored on the Stripe Session (`customer_details.email`, `customer_details.phone`, and the `fullname` entry in `custom_fields`). They are not copied into the local ticket database. Existing sessions keep their old configuration; start a fresh checkout after deployment to see the changes. The merchant name/logo still come from your Stripe account branding.
+
 ## Payment and security flow
 
 1. The browser POSTs a tier name, never an amount or arbitrary price. The server selects its configured price, creates an order, and sets a random per-order HttpOnly, SameSite cookie (Secure over HTTPS, seven-day lifetime). Only a SHA-256 hash of that cookie is stored.

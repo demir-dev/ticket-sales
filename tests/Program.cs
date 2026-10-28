@@ -92,6 +92,13 @@ try
     fake.Json = "{\"id\":\"cs_new\",\"url\":\"https://checkout.stripe.com/c/pay/test\"}";
     using var created = await stripe.Create(store.Get(orderId)!);
     Assert(fake.IdempotencyKey == "ticket-" + orderId && fake.Form.Contains("price_standard") && !fake.Form.Contains("price_wrong"), "server-side price and stable Stripe idempotency key");
+    var form = fake.Form.Split('&').Select(part => part.Split('=', 2))
+        .ToDictionary(part => Uri.UnescapeDataString(part[0]), part => Uri.UnescapeDataString(part[1].Replace("+", " ")));
+    Assert(form["submit_type"] == "book", "Checkout uses Book action");
+    Assert(form["phone_number_collection[enabled]"] == "true", "Checkout collects phone number");
+    Assert(form["custom_fields[0][key]"] == "fullname" && form["custom_fields[0][label][custom]"] == "Full name" &&
+        form["custom_fields[0][type]"] == "text" && form["custom_fields[0][optional]"] == "false",
+        "Checkout requires full name independently of cardholder name");
     Console.WriteLine($"All {count} checks passed.");
 }
 finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(directory, true); }

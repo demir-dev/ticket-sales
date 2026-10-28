@@ -20,6 +20,18 @@ public sealed class StripeGateway(HttpClient http, Settings settings)
     }
     public Task<JsonDocument> Create(Order order) => Send(HttpMethod.Post, "checkout/sessions", new()
     {
+        ["submit_type"] = "book",
+        ["phone_number_collection[enabled]"] = "true",
+        // Email is collected by hosted Checkout by default. Collect the attendee's
+        // full name separately from the cardholder name, including wallet payments.
+        // Custom fields work with this app's pinned Stripe API version.
+        ["custom_fields[0][key]"] = "fullname",
+        ["custom_fields[0][label][type]"] = "custom",
+        ["custom_fields[0][label][custom]"] = "Full name",
+        ["custom_fields[0][type]"] = "text",
+        ["custom_fields[0][optional]"] = "false",
+        ["custom_fields[0][text][minimum_length]"] = "1",
+        ["custom_fields[0][text][maximum_length]"] = "200",
         ["mode"] = "payment", ["line_items[0][price]"] = order.PriceId, ["line_items[0][quantity]"] = "1",
         ["expires_at"] = order.CreatedAt.AddHours(1).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture),
         ["client_reference_id"] = order.Id, ["metadata[order_id]"] = order.Id,
