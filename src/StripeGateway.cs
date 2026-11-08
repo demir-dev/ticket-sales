@@ -32,7 +32,7 @@ public sealed class StripeGateway(HttpClient http, Settings settings)
         ["custom_fields[0][optional]"] = "false",
         ["custom_fields[0][text][minimum_length]"] = "1",
         ["custom_fields[0][text][maximum_length]"] = "200",
-        ["mode"] = "payment", ["line_items[0][price]"] = order.PriceId, ["line_items[0][quantity]"] = "1",
+        ["mode"] = "payment", ["line_items[0][price]"] = order.PriceId, ["line_items[0][quantity]"] = order.Quantity.ToString(System.Globalization.CultureInfo.InvariantCulture),
         ["expires_at"] = order.CreatedAt.AddHours(1).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture),
         ["client_reference_id"] = order.Id, ["metadata[order_id]"] = order.Id,
         ["success_url"] = settings.PublicUrl + "/success.html?order=" + order.Id,
@@ -92,7 +92,7 @@ public sealed class Fulfillment(Store store, StripeGateway stripe, Settings sett
         var items = lines.GetProperty("data");
         if (lines.GetProperty("has_more").GetBoolean() || items.GetArrayLength() != 1 ||
             items[0].GetProperty("price").GetProperty("id").GetString() != order.PriceId ||
-            items[0].GetProperty("quantity").GetInt32() != 1)
+            items[0].GetProperty("quantity").GetInt32() != order.Quantity)
             throw new InvalidOperationException("Unexpected Stripe line items.");
         // Use current Stripe state so out-of-order events cannot undo a paid order.
         var paid = session.GetProperty("payment_status").GetString() is "paid" or "no_payment_required";

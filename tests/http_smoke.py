@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory() as temp:
         with sqlite3.connect(str(Path(temp) / 'test.db')) as db:
             db.execute("INSERT INTO orders(id,access_hash,tier,price_id,status) VALUES(?,?,?,?,?)",
                        ('test_order', hashlib.sha256(token.encode()).hexdigest(), 'standard', 'price_standard', 'paid'))
-            db.execute("INSERT INTO tickets(order_id,code) VALUES(?,?)", ('test_order', 'test_private_code'))
+            db.execute("INSERT INTO tickets(order_id,ordinal,code) VALUES(?,1,?)", ('test_order', 'test_private_code'))
         assert request('/api/orders/test_order')[0] == 404
         assert request('/api/orders/test_order', headers={'Cookie': 'order_test_order=wrong'})[0] == 404
         code, body, _ = request('/api/orders/test_order', headers={'Cookie': 'order_test_order=' + token})
@@ -67,6 +67,10 @@ with tempfile.TemporaryDirectory() as temp:
         data = json.dumps({'tier': 'standard'}).encode()
         assert request('/api/checkout', data, {'Content-Type': 'application/json', 'Origin': 'https://evil.example'})[0] == 403
         assert request('/api/checkout', b'{"tier":"price_attacker"}', {'Content-Type': 'application/json', 'Origin': base})[0] == 400
+        for quantity in [0, -1, 1001, 2147483647, 1.5, "2"]:
+            payload = json.dumps({'tier': 'standard', 'quantity': quantity}).encode()
+            result = request('/api/checkout', payload, {'Content-Type': 'application/json', 'Origin': base})
+            assert result[0] == 400, (quantity, result[0], result[1])
         assert request('/stripe/webhook', b'{}')[0] == 400
         event = json.dumps({'id': 'evt_smoke', 'type': 'checkout.session.completed', 'livemode': False,
                             'data': {'object': {'id': 'cs_unrelated', 'client_reference_id': 'unknown'}}}).encode()

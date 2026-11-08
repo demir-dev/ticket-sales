@@ -29,14 +29,14 @@ try
     var stripe = new StripeGateway(new HttpClient(fake), settings);
     var handler = new Fulfillment(store, stripe, settings);
     var orderId = Guid.NewGuid().ToString("N");
-    store.Create(orderId, "access", "standard", "price_standard");
+    store.Create(orderId, "access", "standard", "price_standard", 3);
     JsonDocument Event(string id, string type, string? reference = null) => JsonDocument.Parse(JsonSerializer.Serialize(new
     { id, type, livemode = false, data = new { @object = new { id = "cs_test_123", client_reference_id = reference ?? orderId } } }));
-    void Session(string status, string payment, string price = "price_standard", string? reference = null) => fake.Json = JsonSerializer.Serialize(new
+    void Session(string status, string payment, string price = "price_standard", string? reference = null, int quantity = 3) => fake.Json = JsonSerializer.Serialize(new
     {
         id = "cs_test_123", client_reference_id = reference ?? orderId, metadata = new { order_id = orderId },
         mode = "payment", livemode = false, status, payment_status = payment, amount_total = 1200, currency = "eur",
-        line_items = new { has_more = false, data = new[] { new { price = new { id = price }, quantity = 1 } } }
+        line_items = new { has_more = false, data = new[] { new { price = new { id = price }, quantity } } }
     });
     async Task Deliver(string id, string type) { using var evt = Event(id, type); await handler.Handle(evt.RootElement); }
     Session("complete", "unpaid");
@@ -49,6 +49,10 @@ try
     Session("expired", "unpaid");
     await Deliver("evt_expired", "checkout.session.expired");
     Assert(store.Get(orderId)!.Status == "expired" && store.Get(orderId)!.Ticket == null, "expiration issues no ticket");
+    Session("complete", "paid", quantity: 2);
+    var quantityRejected = false;
+    try { await Deliver("evt_quantity", "checkout.session.async_payment_succeeded"); } catch (InvalidOperationException) { quantityRejected = true; }
+    Assert(quantityRejected && store.Get(orderId)!.Tickets.Length == 0, "mismatched paid Stripe quantity cannot issue tickets");
     Session("complete", "paid", "price_wrong");
     var rejected = false;
     try { await Deliver("evt_retry", "checkout.session.async_payment_succeeded"); } catch (InvalidOperationException) { rejected = true; }
@@ -65,6 +69,8 @@ try
     fake.Fail = false;
     await Deliver("evt_retry", "checkout.session.async_payment_succeeded");
     var ticket = store.Get(orderId)!.Ticket;
+    Assert(store.Get(orderId)!.Tickets.Length == 3 && store.Get(orderId)!.Tickets.Distinct().Count() == 3,
+        "three paid admissions receive three distinct ticket codes");
     Assert(ticket?.Length == 64 && store.Get(orderId)!.AmountTotal == 1200, "paid session issues unique ticket and amount");
     await Deliver("evt_retry", "checkout.session.async_payment_succeeded");
     await Deliver("evt_second", "checkout.session.completed");
@@ -77,7 +83,7 @@ try
     using (var db = store.Open())
     {
         using var cmd = db.CreateCommand(); cmd.CommandText = "SELECT COUNT(*) FROM tickets";
-        Assert(Convert.ToInt32(cmd.ExecuteScalar()) == 1, "one ticket per order enforced in database");
+        Assert(Convert.ToInt32(cmd.ExecuteScalar()) == 3, "exactly three unique tickets despite retries and concurrency");
     }
     using (var unrelated = Event("evt_unknown", "checkout.session.completed", "unknown")) await handler.Handle(unrelated.RootElement);
     Assert(store.Get("unknown") == null, "unrelated Stripe sessions do not create orders");
@@ -99,6 +105,37 @@ try
     Assert(form["custom_fields[0][key]"] == "fullname" && form["custom_fields[0][label][custom]"] == "Full name" &&
         form["custom_fields[0][type]"] == "text" && form["custom_fields[0][optional]"] == "false",
         "Checkout requires full name independently of cardholder name");
+    Assert(form["line_items[0][quantity]"] == "3", "Stripe receives server-stored quantity");
+    Assert(!TicketLimits.Valid(0) && !TicketLimits.Valid(-1) && !TicketLimits.Valid(1001) && TicketLimits.Valid(1) && TicketLimits.Valid(1000),
+        "quantity bounds reject invalid orders");
+    var batchId = Guid.NewGuid().ToString("N");
+    store.Create(batchId, "access", "premium", "price_premium", 3);
+    using (var db = store.Open()) Store.Exec(db, null,
+        "CREATE TRIGGER fail_batch BEFORE INSERT ON tickets WHEN NEW.ordinal=2 BEGIN SELECT RAISE(ABORT,'test failure'); END;");
+    rejected = false;
+    try { store.Apply("evt_batch", "test", store.Get(batchId)!, "cs_batch", "paid", 300, "eur"); }
+    catch (Microsoft.Data.Sqlite.SqliteException) { rejected = true; }
+    Assert(rejected && store.Get(batchId)!.Status == "pending" && store.Get(batchId)!.Tickets.Length == 0,
+        "failure halfway through ticket issuance rolls back entire batch and paid state");
+    using (var db = store.Open()) Store.Exec(db, null, "DROP TRIGGER fail_batch");
+    store.Apply("evt_batch", "test", store.Get(batchId)!, "cs_batch", "paid", 300, "eur");
+    Assert(store.Get(batchId)!.Tickets.Length == 3, "failed batch event can retry and issue all tickets");
+    var legacy = new Store(Path.Combine(directory, "legacy.db"));
+    using (var db = legacy.Open())
+    {
+        Store.Exec(db, null, File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Migrations", "001.sql")));
+        Store.Exec(db, null, "INSERT INTO orders(id,access_hash,tier,price_id,status) VALUES('old','hash','standard','price_old','paid')");
+        Store.Exec(db, null, "INSERT INTO tickets(order_id,code) VALUES('old','original_code')");
+        Store.Exec(db, null, "INSERT INTO stripe_events(id,type) VALUES('evt_old','test')");
+    }
+    legacy.Initialize(); legacy.Initialize();
+    Assert(legacy.Get("old")!.Quantity == 1 && legacy.Get("old")!.Ticket == "original_code",
+        "schema migration preserves existing paid tickets and defaults quantity to one");
+    using (var db = legacy.Open())
+    {
+        using var cmd = db.CreateCommand(); cmd.CommandText = "SELECT COUNT(*) FROM stripe_events WHERE id='evt_old'";
+        Assert(Convert.ToInt32(cmd.ExecuteScalar()) == 1, "migration preserves processed event history");
+    }
     Console.WriteLine($"All {count} checks passed.");
 }
 finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(directory, true); }

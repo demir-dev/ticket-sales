@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 
@@ -44,13 +45,14 @@ app.MapPost("/api/checkout", async (HttpContext context, StripeGateway stripe) =
     try { input = await context.Request.ReadFromJsonAsync<CheckoutInput>(); }
     catch (JsonException) { return Results.BadRequest(); }
     if (input?.Tier == null || !settings.Prices.TryGetValue(input.Tier, out var price)) return Results.BadRequest(new { error = "Choose a valid ticket." });
+    if (!TicketLimits.Valid(input.Quantity)) return Results.BadRequest(new { error = $"Choose between 1 and {TicketLimits.Maximum} tickets." });
     // A retry uses the same local order and Stripe idempotency key. Tier changes create a new order.
     Order order;
-    if (input.OrderId != null && store.Get(input.OrderId) is { } existing && Authorized(context, existing) && existing.Tier == input.Tier && existing.Status == "pending") order = existing;
+    if (input.OrderId != null && store.Get(input.OrderId) is { } existing && Authorized(context, existing) && existing.Tier == input.Tier && existing.Quantity == input.Quantity && existing.Status == "pending") order = existing;
     else
     {
         var id = Guid.NewGuid().ToString("N"); var access = Tokens.New();
-        store.Create(id, access, input.Tier, price); order = store.Get(id)!;
+        store.Create(id, access, input.Tier, price, input.Quantity); order = store.Get(id)!;
         context.Response.Cookies.Append(Tokens.Cookie(id), access, new CookieOptions
         {
             HttpOnly = true, Secure = settings.PublicUrl.StartsWith("https:"), SameSite = SameSiteMode.Lax,
@@ -79,7 +81,7 @@ app.MapGet("/api/orders/{id}", (string id, HttpContext context) =>
 {
     var order = store.Get(id);
     if (order == null || !Authorized(context, order)) return Results.NotFound();
-    return Results.Ok(new { order.Id, order.Tier, order.Status, order.AmountTotal, order.Currency, ticket = order.Ticket });
+    return Results.Ok(new { order.Id, order.Tier, order.Status, order.AmountTotal, order.Currency, order.Quantity, tickets = order.Tickets, ticket = order.Ticket });
 }).RequireRateLimiting("status");
 app.MapPost("/stripe/webhook", async (HttpContext context, Fulfillment fulfillment) =>
 {
@@ -103,4 +105,4 @@ static bool Authorized(HttpContext context, Order order)
     return token != null && token.Length == 64 && CryptographicOperations.FixedTimeEquals(
         Encoding.UTF8.GetBytes(Tokens.Hash(token)), Encoding.UTF8.GetBytes(order.AccessHash));
 }
-public sealed record CheckoutInput(string? Tier, string? OrderId);
+public sealed record CheckoutInput(string? Tier, string? OrderId, [property: JsonNumberHandling(JsonNumberHandling.Strict)] int Quantity = 1);

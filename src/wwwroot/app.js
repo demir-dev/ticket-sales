@@ -1,26 +1,6 @@
 'use strict';
 const message = document.querySelector('#message');
 const orderId = new URLSearchParams(location.search).get('order');
-const form = document.querySelector('#checkout');
-if (form) form.addEventListener('submit', async event => {
-  event.preventDefault();
-  const button = document.querySelector('#buy');
-  button.disabled = true;
-  message.textContent = 'Opening Stripe…';
-  const tier = new FormData(form).get('tier');
-  let previous;
-  try { previous = JSON.parse(sessionStorage.getItem('checkout') || 'null'); } catch { /* storage unavailable */ }
-  try {
-    const response = await fetch('/api/checkout', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tier, orderId: previous?.tier === tier ? previous.orderId : null })
-    });
-    const data = await response.json();
-    if (data.orderId) { const resume = document.querySelector('#resume'); resume.href = '/success.html?order=' + encodeURIComponent(data.orderId); resume.hidden = false; try { sessionStorage.setItem('checkout', JSON.stringify({ tier, orderId: data.orderId })); } catch { /* cookie remains authoritative */ } }
-    if (!response.ok) throw new Error(data.error || 'Unable to open checkout. Please retry shortly.');
-    location.assign(data.url);
-  } catch (error) { message.textContent = error.message; button.disabled = false; }
-});
 const cancelLink = document.querySelector('#check-order');
 if (cancelLink && orderId) cancelLink.href = '/success.html?order=' + encodeURIComponent(orderId);
 if (document.querySelector('#result')) {
@@ -36,11 +16,20 @@ if (document.querySelector('#result')) {
       if (response.status === 404) throw new Error('Order unavailable in this browser. Use the browser you paid with; its private access cookie is required.');
       if (!response.ok) throw new Error('Could not check your order. Please try again.');
       const order = await response.json();
-      if (order.status === 'paid' && order.ticket) {
-        document.querySelector('#heading').textContent = 'Your ticket is ready.';
-        message.textContent = 'Payment confirmed. Save this ticket now.';
+      if (order.status === 'paid' && order.tickets?.length === order.quantity) {
+        document.querySelector('#heading').textContent = order.quantity === 1 ? 'Your ticket is ready.' : 'Your tickets are ready.';
+        message.textContent = 'Payment confirmed. Save all ' + order.quantity + ' ticket' + (order.quantity === 1 ? '' : 's') + ' now.';
         document.querySelector('#tier').textContent = order.tier.toUpperCase() + ' admission';
-        document.querySelector('#code').textContent = order.ticket;
+        const list = document.querySelector('#codes');
+        list.replaceChildren();
+        order.tickets.forEach((ticket, index) => {
+          const item = document.createElement('li');
+          item.textContent = 'Ticket ' + (index + 1);
+          const code = document.createElement('code');
+          code.textContent = ticket;
+          item.append(code);
+          list.append(item);
+        });
         document.querySelector('#ticket').hidden = false;
         try { sessionStorage.removeItem('checkout'); } catch { /* optional */ }
         return;

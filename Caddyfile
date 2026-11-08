@@ -1,5 +1,7 @@
-# Append this block to /etc/caddy/Caddyfile on the host.
+# Merge this site block into /etc/caddy/Caddyfile on the host.
+# Keep any other existing site blocks. If APP_PORT changes, update this port too.
 paok-arena-tickets.morphiclabs.net {
     encode gzip zstd
+    header Strict-Transport-Security "max-age=31536000"
     reverse_proxy 127.0.0.1:8087
 }
